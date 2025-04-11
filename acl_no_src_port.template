@@ -1,0 +1,65 @@
+##template properties
+name =acl_no_src_port;
+description = ;
+tags = ;
+userDefined = true;
+supportedPlatforms = All;
+templateType = POLICY;
+templateSubType = DEVICE;
+contentType = TEMPLATE_CLI;
+implements =implements;
+dependencies = ;
+published = false;
+imports = ;
+##
+##template variables
+
+#    Copyright (c) 2019, 2020 by Cisco Systems, Inc.
+#    All rights reserved.
+
+@(DisplayName="ACL Name", Description="Name of Access Control List, e.g. acl_test")
+string ACL_NAME {
+    maxLength = 64;
+};
+
+@(DisplayName="Source Network", Description="Source network with prefix, example 10.10.10.0/24, 2001:db8::1/64, any")
+string SRC_NETWORK;
+
+@(DisplayName="Destination Network", Description="Destination network with prefix, example 20.20.20.0/24, 2001:db9::1/64, any")
+string DEST_NETWORK;
+
+# use string instead of int type, to accomodate the string representation of some common ports, e.g. www
+@(DisplayName="Destination Port", Description="Destination port number with value from [0, 65535] or string representation of well-known ports, example 443 or www")
+string DEST_PORT;
+
+@(DisplayName="ACE Action", Description="Forward or reject the packet")
+enum ACE_ACTION {
+    validValues=permit,deny;
+    defaultValue=permit;
+};
+
+@(IsMandatory=false, DisplayName="IP Version", Description="IP version ip or ipv6")
+enum IP_VERSION {
+    validValues=ip,ipv6;
+    defaultValue=ip;
+};
+
+@(DisplayName="Protocol", Description="example tcp")
+string PROTOCOL {
+    defaultValue=tcp;
+};
+
+@(DisplayName="Sequence Number of ACE", Description="Sequence number of access control entry, example 10")
+long SEQ_NUM {
+    min = 1;
+    max = 4294967295;
+    defaultValue=10;
+};
+
+##
+##template content
+
+$$IP_VERSION$$ access-list $$ACL_NAME$$
+  $$SEQ_NUM$$ $$ACE_ACTION$$ $$PROTOCOL$$ $$SRC_NETWORK$$ $$DEST_NETWORK$$ eq $$DEST_PORT$$
+    
+##
