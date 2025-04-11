@@ -1,0 +1,18 @@
+##template properties
+name =NDFC_export01;
+description = ;
+tags = ;
+userDefined = true;
+supportedPlatforms = All;
+templateType = POLICY;
+templateSubType = VLAN;
+contentType = TEMPLATE_CLI;
+implements = ;
+dependencies = ;
+published = false;
+imports = ;
+##
+##template variables
+##
+##template content
+##
