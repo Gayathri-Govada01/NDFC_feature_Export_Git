@@ -1,0 +1,281 @@
+##template properties
+name =Inventory_Report;
+description = ;
+tags =fabric;
+userDefined = true;
+supportedPlatforms = All;
+templateType = REPORT;
+templateSubType = GENERIC;
+contentType = PYTHON;
+implements =implements;
+dependencies = ;
+published = false;
+imports = ;
+##
+##template variables
+@(IsInternal=true)
+string fabric_name;
+
+@(IsMandatory=true, DisplayName="Include Modules")
+enum do_mod{
+    validValues = true, false;
+    defaultValue = true;
+};
+
+@(IsMandatory=true, DisplayName="Include Licenses")
+enum do_lic{
+    validValues = true, false;
+    defaultValue = true;
+};
+
+##
+##template content
+
+from collections import OrderedDict
+from collections import defaultdict 
+
+from reportlib.preport import *
+import reportlib.rest_util as rest_util
+from utility import *
+
+from com.cisco.dcbu.vinci.rest.services.jython import WrappersResp
+from com.cisco.dcbu.vinci.rest.services.jython import InventoryWrapper
+from com.cisco.dcbu.vinci.rest.services.jython import Wrapper
+
+#Scope specific functions for API focused reports
+navId = "-1"
+db_id_set = set()
+device_to_fabric = {}
+        
+def get_nav_id():
+    return str(InventoryWrapper.getFabricId(fabric_name))
+
+def no_device_report(report, case):
+    summary = report.add_summary()
+    if case == 1:
+        summary['Status'] = Formatter.add_marker('There are no devices in the fabric!', Marker.WARNING)
+        summary['Message'] = Formatter.add_marker('Please add devices to fabric {}, and run report again.'.format(fabric_name), Marker.INFO)
+        report.increment_warning(1)
+
+def get_switchinfo():
+    global db_id_set
+    global device_to_fabric
+    
+    switches = json.loads(Util.exe(InventoryWrapper.getSwitchesByFabricName(fabric_name)))
+    for switch in switches:
+      db_id_set.add(float(switch["switchDbId"]))
+      device_to_fabric[str(switch["switchName"])] = str(switch["fabricName"])
+
+def generateReport(context):
+    try:
+        respObj = WrappersResp.getRespObj()
+        Logger.info("Inventory Report Started!")
+        report = Report("Inventory Report")
+        
+        #Set Scope
+        global navId
+        navId = get_nav_id()
+        
+        #get switch info
+        get_switchinfo()
+        
+        # device check
+        if len(db_id_set) > 0 and len(device_to_fabric) > 0:
+          summary = report.add_summary()
+          process_inventory(report, summary)
+          if do_mod == "true" :
+              process_mod(report, summary)
+          if do_lic == "true" :
+              process_switch_lic(report, summary)
+              process_dcnm_lic(report, summary)
+        else:
+          Logger.warn("No devices present in fabric: {}".format(fabric_name))
+          no_device_report(report, 1)
+
+    except Exception as e:
+      if "WrappersResp" in str(e):
+        Logger.error("Inventory Report failed: Exception has occured while generating Inventory report: Problem in generating the report right now. Please re-run the report.")
+        respObj.setFailureRetCode()
+        respObj.addErrorReport('Inventory', "Unexpected error occurred. Please check all the services are running and try again.")
+        respObj.setValue(report)
+        return respObj
+      else:
+        Logger.error("Inventory Report failed: Exception has occured while generating Inventory report: " + str(e))
+        respObj.setFailureRetCode()
+        respObj.addErrorReport('Inventory', "Exception while processing: " + str(e))
+        respObj.setValue(report)
+        return respObj
+
+    Logger.info("Inventory Report Complete!")
+    respObj.setSuccessRetCode()
+    respObj.setValue(report)
+    return respObj
+
+def get_topology():
+    topology_url = Wrapper.getEnv("DCNM_LAN_FABRIC_SVC")
+    resp = rest_util.get("https://{}/rest/topology".format(topology_url), "includeInterFabricLinks=true", "renderInterFabricLinksAsCloud=true", "hideUndiscoveredCloud=true", "navId="+navId)
+    return json.loads(resp)
+    
+def get_mod():
+    discovery_url=Wrapper.getEnv("DCNM_LAN_DISCOVERY_SVC")
+    resp = rest_util.get("https://{}/inventory/modules/".format(discovery_url), "navId="+navId)
+    return json.loads(resp)
+    
+def get_lic():
+    discovery_url=Wrapper.getEnv("DCNM_LAN_DISCOVERY_SVC")
+    resp = rest_util.get("https://{}/inventory/licenses".format(discovery_url), "navId="+navId)
+    return json.loads(resp)
+    
+def get_lic_dcnm():
+    discovery_url=Wrapper.getEnv("DCNM_LIC_SVC")
+    resp = rest_util.get("https://{}/license/getLicenseAssigmentInfo".format(discovery_url), "navId="+navId)
+    return json.loads(resp)
+
+def not_okay(status):
+    ret = status
+    if status == "ok":
+        ret = Formatter.add_marker(str(status),Marker.SUCCESS)
+    elif str(status).lower() == "n/a":
+        ret = Formatter.add_marker(str(status),"NONE")
+    else:
+        ret = Formatter.add_marker(str(status),Marker.WARNING)
+    return ret
+    
+def hostname_or_fex(hostName):
+    if hostName == "None":
+        return "FEX"
+    return hostName
+        
+def process_inventory(report, summary):
+    Logger.info('Inside process_inventory' + navId)
+    traffic_info = report.add_section("Chassis", "inventory-switches")
+    total_switches = 0
+    models = defaultdict(int) 
+    roles = defaultdict(int) 
+    version = defaultdict(int) 
+    data = get_topology()
+    for row in data["nodeList"]:
+      try:
+        if int(row["id"]) in db_id_set or row["data"]["fex"] is True:
+          temp = OrderedDict()
+          temp["Hostname"] = hostname_or_fex(str(row["displayName"]))
+          Logger.info(temp["Hostname"] + " " + str(row["data"]["fex"]))
+          row = row["data"]
+          temp["IP Address"] = str(row["ipAddress"])
+          temp["Fabric"] = str(row["fabricName"])
+          temp["Model"] = str(row["model"])
+          temp["SW Version"] = str(row["release"])
+          temp["Serial Number"] = str(row["serialNumber"])
+          temp["Role"] = str(row["switchRole"])
+          temp["Status"] = not_okay(str(row["status"]))
+          temp["Uptime"] = str(row["upTimeStr"])
+          traffic_info.append("Chassis", temp, temp["IP Address"]+"-"+temp["Serial Number"])
+          total_switches = total_switches + 1
+          if temp["Role"] != "":
+              roles[temp["Role"]] +=1
+          if temp["Model"] != "":
+              models[temp["Model"]] += 1
+          if temp["SW Version"] != "":
+              version[temp["SW Version"]] += 1
+      except ValueError:
+        Logger.info("Node in nodeList {} to not be added to the inventory-switches section!".format(row["id"]))
+    
+    summary["Total Chassis"] = total_switches
+    mod_chart = summary.add_chart(ChartTypes.PIE_CHART, "Model_Chart")
+    mod_chart.set_title("Chassis Model Summary")
+    for key in models:
+        mod_chart.add_value(key,models[key])
+    version_chart = summary.add_chart(ChartTypes.PIE_CHART, "Version_Chart")
+    version_chart.set_title("Version")
+    version_chart.set_subtitle("NXOS Versions in use in the fabric")
+    for key in version:
+        version_chart.add_value(key,version[key])
+    role_chart = summary.add_chart(ChartTypes.PIE_CHART, "Role_Chart")
+    role_chart.set_title("Roles")
+    role_chart.set_subtitle("Switch Roles in use in the fabric")
+    for key in roles:
+        role_chart.add_value(key,roles[key])
+
+def process_mod(report, summary):
+    Logger.info('Inside process_mod' + navId)
+    mod_info = report.add_section("Modules", "inventory-modules")
+    total_modules = 0
+    rows = get_mod()
+    unique_id=0
+    for row in rows:
+        unique_id+=1
+        temp = OrderedDict()
+        temp["Switch"] = str(row["Switch"])
+        temp["Fabric"] = str(device_to_fabric[temp["Switch"]])
+        temp["Name"] = str(row["Name"])
+        temp["Model Name"] = str(row["ModelName"])
+        temp["Serial Number"] = str(row["SerialNum"])
+        temp["2nd Serial Number"] = str(row["2nd SerialNum"])
+        temp["Type"] = str(row["Type"])
+        temp["Slot"] = str(row["Slot"])
+        temp["Oper Status"] = not_okay(str(row["OperStatus"]))
+        temp["HW Rev"] = str(row["Hardware Revision"])
+        temp["SW Rev"] = str(row["Software Revision"])
+        temp["AssetID"] = str(row["AssetID"])
+        mod_info.append("Modules", temp, "{}-{}-{}-{}-{}".format(temp["Switch"],temp["Name"],temp["Serial Number"],temp["Slot"], unique_id))
+        total_modules = total_modules + 1
+    summary["Total Modules"] = total_modules
+
+def get_warning(warning):
+    if warning != "":
+      return Formatter.add_marker(warning,Marker.WARNING)
+    else:
+      return Formatter.add_marker(warning, "NONE")
+
+def process_switch_lic(report, summary):
+    Logger.info('Inside process_lic' + navId)
+    lic_info = report.add_section("Switch Licenses", "inventory-switch-licenses")
+    rows_ = get_lic()
+    rows = [x for x in rows_ if str(x["group"]) == fabric_name]
+    licenses_used = 0
+    unique_id=0
+    for row in rows:
+        unique_id+=1
+        temp = OrderedDict()
+        temp["Switch"] = str(row["switchName"])
+        temp["Fabric"] = str(row["group"])
+        temp["Feature"] = str(row["features"])
+        temp["Status"] = str(row["status"])
+        temp["Type"] = str(row["type"])
+        temp["Warnings"] = get_warning(str(row["warnings"]))
+        if temp["Status"] == "Unused" and temp["Type"] == "Unlicensed " and str(row["warnings"]) == "":
+            pass
+        else:
+            lic_info.append("Licenses", temp, "{}-{}-{}".format(temp["Switch"], temp["Feature"], unique_id))
+            if temp["Status"] == "In Use":
+                licenses_used = licenses_used + 1
+    summary["Licenses used"] = licenses_used
+
+def get_expiry(date):
+  if date != "null":
+    return date
+  return ""
+
+def process_dcnm_lic(report, summary):
+    Logger.info('Inside process_dcnm_lic' + navId)
+    lic_info = report.add_section("NDFC Licenses", "inventory-dcnm-licenses")
+    rows_ = get_lic_dcnm()
+    rows = [x for x in rows_ if str(x["fabOrLanName"]) == fabric_name]
+    licenses_used = 0
+    unique_id=0
+    for row in rows:
+        unique_id+=1
+        temp = OrderedDict()
+        temp["Switch"] = str(row["sys_name"])
+        temp["Fabric"] = str(row["fabOrLanName"])
+        temp["Model"] = str(row["switchModel"])
+        temp["Type"] = str(row["licenseType"])
+        temp["State"] = str(row["licenseState"])
+        temp["Expiry"] = get_expiry(str(row["expDate"]))
+        if not row["licenseable"]:
+            pass
+        else:
+            lic_info.append("Licenses-NDFC", temp, "{}-{}-{}".format(temp["Switch"], temp["State"], unique_id))
+            licenses_used = licenses_used + 1
+    summary["Licensable (NDFC)"] = licenses_used      
+##
